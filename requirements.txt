@@ -1,5 +1,6 @@
 streamlit
-Flask
+Flask==2.3.3
+werkzeug==2.3.3
 PyPDF2
 langchain
 langchain-google-genai
