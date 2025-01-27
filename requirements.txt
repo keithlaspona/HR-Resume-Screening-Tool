@@ -1,4 +1,3 @@
-streamlit
 Flask
 PyPDF2
 langchain
