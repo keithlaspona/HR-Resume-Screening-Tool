@@ -1,6 +1,6 @@
 import os
 import sqlite3
-from flask import Flask, render_template, request, session, redirect, url_for
+from flask import Flask, request, jsonify
 from PyPDF2 import PdfReader
 from langchain_google_genai import ChatGoogleGenerativeAI
 from dotenv import load_dotenv
@@ -93,74 +93,23 @@ def store_data_in_db(job_description, resumes, scores, summaries):
     finally:
         conn.close()
 
-# Streamlit login route
-def login():
-    st.title("Login")
-    username = st.text_input("Username")
-    password = st.text_input("Password", type="password")
+@app.route("/process_resumes", methods=["POST"])
+def process_resumes():
+    job_description = request.json.get("job_description")
+    resumes = request.json.get("resumes", [])
 
-    if st.button("Login"):
-        if username == USERNAME and password == PASSWORD:
-            session["logged_in"] = True
-            st.session_state.logged_in = True
-            st.experimental_rerun()  # Refresh the page after login
-        else:
-            st.error("Invalid username or password")
+    if not job_description or not resumes:
+        return jsonify({"error": "Job description and resumes are required"}), 400
 
-# Streamlit main route
-def main():
-    if not st.session_state.get("logged_in", False):
-        login()
-    else:
-        st.title("HR Resume Screening Tool")
+    try:
+        resume_texts = [extract_text_from_pdf(resume['file']) for resume in resumes]
+        summaries = [summarize_text(text) for text in resume_texts]
+        scores = rank_resumes(job_description, resume_texts)
+        store_data_in_db(job_description, resume_texts, scores, summaries)
+        return jsonify({"results": list(zip([resume['name'] for resume in resumes], scores, summaries))}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
-        job_description = st.text_area("Job Description")
-        uploaded_files = st.file_uploader("Upload Resumes", accept_multiple_files=True, type=["pdf"])
 
-        if st.button("Process Resumes"):
-            if not job_description:
-                st.error("Job description is required.")
-            elif not uploaded_files:
-                st.error("Please upload at least one resume.")
-            else:
-                resumes = []
-                summaries = []
-
-                for file in uploaded_files:
-                    filepath = os.path.join(app.config['UPLOAD_FOLDER'], file.name)
-                    with open(filepath, "wb") as f:
-                        f.write(file.getbuffer())
-
-                    resume_text = extract_text_from_pdf(filepath)
-                    if resume_text.startswith("Error"):
-                        continue
-
-                    resumes.append(resume_text)
-                    summaries.append(summarize_text(resume_text))
-
-                scores = rank_resumes(job_description, resumes)
-                store_data_in_db(job_description, resumes, scores, summaries)
-
-                scores = [round(score, 2) for score in scores]
-
-                results = list(zip([file.name for file in uploaded_files], scores, summaries))
-                results.sort(key=lambda x: x[1], reverse=True)
-
-                if results:
-                    top_match = results[0]
-                    st.write("Top Match:")
-                    st.write(top_match)
-                    st.write("All Results:")
-                    for result in results:
-                        st.write(result)
-        
-        # Logout button
-        if st.button("Logout"):
-            st.session_state.clear()  # Clear session state for logout
-            st.experimental_rerun()
-
-# Main logic to run Streamlit app
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-
-main()
+if __name__ == "__main__":
+    app.run(debug=True)
