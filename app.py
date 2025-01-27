@@ -4,6 +4,7 @@ from flask import Flask, render_template, request, session, redirect, url_for
 from PyPDF2 import PdfReader
 from langchain_google_genai import ChatGoogleGenerativeAI
 from dotenv import load_dotenv
+import streamlit as st
 
 load_dotenv()
 
@@ -92,85 +93,74 @@ def store_data_in_db(job_description, resumes, scores, summaries):
     finally:
         conn.close()
 
-# Login route
-@app.route("/login", methods=["GET", "POST"])
+# Streamlit login route
 def login():
-    if request.method == "POST":
-        username = request.form["username"]
-        password = request.form["password"]
+    st.title("Login")
+    username = st.text_input("Username")
+    password = st.text_input("Password", type="password")
 
+    if st.button("Login"):
         if username == USERNAME and password == PASSWORD:
             session["logged_in"] = True
-            return redirect(url_for("main"))
+            st.session_state.logged_in = True
+            st.experimental_rerun()  # Refresh the page after login
         else:
-            error = "Invalid username or password"
-            return render_template("index.html", error=error)
+            st.error("Invalid username or password")
 
-    return render_template("index.html")
-
-# Protected route for main functionality
-@app.route("/main", methods=["GET", "POST"])
+# Streamlit main route
 def main():
-    if not session.get("logged_in"):
-        app.logger.debug("Session not logged in. Redirecting to index.")
-        return redirect(url_for("login"))  # Ensure the user is redirected to the login page if not logged in
+    if not st.session_state.get("logged_in", False):
+        login()
+    else:
+        st.title("HR Resume Screening Tool")
 
-    app.logger.debug("Session logged in. Rendering main.")
-    results = []
-    top_match = None
+        job_description = st.text_area("Job Description")
+        uploaded_files = st.file_uploader("Upload Resumes", accept_multiple_files=True, type=["pdf"])
 
-    if request.method == "POST":
-        job_description = request.form.get("job_description", "").strip()
-        uploaded_files = request.files.getlist("resumes")
+        if st.button("Process Resumes"):
+            if not job_description:
+                st.error("Job description is required.")
+            elif not uploaded_files:
+                st.error("Please upload at least one resume.")
+            else:
+                resumes = []
+                summaries = []
 
-        if not job_description:
-            error = "Job description is required."
-            return render_template("main.html", results=[], top_match=None, error=error)
+                for file in uploaded_files:
+                    filepath = os.path.join(app.config['UPLOAD_FOLDER'], file.name)
+                    with open(filepath, "wb") as f:
+                        f.write(file.getbuffer())
 
-        if not uploaded_files:
-            error = "Please upload at least one resume."
-            return render_template("main.html", results=[], top_match=None, error=error)
+                    resume_text = extract_text_from_pdf(filepath)
+                    if resume_text.startswith("Error"):
+                        continue
 
-        resumes = []
-        summaries = []
+                    resumes.append(resume_text)
+                    summaries.append(summarize_text(resume_text))
 
-        for file in uploaded_files:
-            filepath = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
-            file.save(filepath)
+                scores = rank_resumes(job_description, resumes)
+                store_data_in_db(job_description, resumes, scores, summaries)
 
-            resume_text = extract_text_from_pdf(filepath)
-            if resume_text.startswith("Error"):
-                continue
+                scores = [round(score, 2) for score in scores]
 
-            resumes.append(resume_text)
-            summaries.append(summarize_text(resume_text))
+                results = list(zip([file.name for file in uploaded_files], scores, summaries))
+                results.sort(key=lambda x: x[1], reverse=True)
 
-        scores = rank_resumes(job_description, resumes)
-        store_data_in_db(job_description, resumes, scores, summaries)
+                if results:
+                    top_match = results[0]
+                    st.write("Top Match:")
+                    st.write(top_match)
+                    st.write("All Results:")
+                    for result in results:
+                        st.write(result)
+        
+        # Logout button
+        if st.button("Logout"):
+            st.session_state.clear()  # Clear session state for logout
+            st.experimental_rerun()
 
-        scores = [round(score, 2) for score in scores]
+# Main logic to run Streamlit app
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
 
-        results = list(zip([file.filename for file in uploaded_files], scores, summaries))
-        results.sort(key=lambda x: x[1], reverse=True)
-
-        if results:
-            top_match = results[0]
-
-    return render_template("main.html", results=results, top_match=top_match, error=None)
-
-# Logout route
-@app.route("/logout")
-def logout():
-    session.pop("logged_in", None)
-    app.logger.debug("User logged out. Redirecting to index.")
-    return redirect(url_for("login"))
-
-# Root route
-@app.route("/")
-def index():
-    if session.get("logged_in"):
-        return redirect(url_for("main"))
-    return redirect(url_for("login"))
-
-if __name__ == "__main__":
-    app.run(debug=True)
+main()
